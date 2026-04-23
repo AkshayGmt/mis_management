@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>MIS System</title>
+
+<style>
+body { font-family: Arial; background:#eef3f8; padding:20px; }
+
+.grid {
+    display:grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap:10px;
+}
+
+.box {
+    background:white;
+    border:1px solid #dcdcdc;
+    padding:10px;
+    min-height:140px;
+    border-radius:6px;
+}
+
+.file {
+    background:#3498db;
+    color:white;
+    padding:6px;
+    margin:5px 0;
+    cursor:grab;
+    font-size:12px;
+    display:flex;
+    justify-content:space-between;
+    border-radius:4px;
+}
+
+button {
+    margin:5px;
+    padding:6px 10px;
+    border:none;
+    background:#2c3e50;
+    color:white;
+    cursor:pointer;
+    border-radius:4px;
+}
+
+table {
+    width:100%;
+    margin-top:20px;
+    border-collapse: collapse;
+    background:white;
+}
+
+th, td {
+    border:1px solid #ccc;
+    padding:6px;
+    font-size:12px;
+    text-align:center;
+}
+
+th {
+    background:#2c3e50;
+    color:white;
+}
+</style>
+</head>
+
+<body>
+
+<h2>MIS SYSTEM (FINAL)</h2>
+
+<form id="uploadForm">
+    <select name="type">
+        <option>SOLD</option>
+        <option>TOTAL</option>
+        <option>CURRENT</option>
+    </select>
+    <input type="file" name="files" multiple>
+    <button type="submit">Upload</button>
+</form>
+
+<hr>
+
+<div id="app"></div>
+
+<button onclick="process()">START COMBINE</button>
+
+<hr>
+
+<div id="tableArea"></div>
+
+<script>
+
+let files = [];
+
+async function load(){
+    let res = await fetch("/files");
+    files = await res.json();
+    render();
+}
+
+function render(){
+
+    let html = `<div class="grid">`;
+
+    let types = ["SOLD","TOTAL","CURRENT"];
+    let kinds = ["DZ","FANCY"];
+
+    types.forEach(t=>{
+        kinds.forEach(k=>{
+
+            html += `
+            <div class="box"
+                 ondrop="drop(event,'${t}','${k}')"
+                 ondragover="allowDrop(event)">
+                <b>${t} - ${k}</b>
+            `;
+
+            files.forEach(f=>{
+                if(f.type==t && f.kind==k){
+                    html += `
+                    <div class="file"
+                         draggable="true"
+                         ondragstart="drag(event)"
+                         id="${f.name}">
+                        <span>${f.name}</span>
+                        <button onclick="del('${f.name}')">X</button>
+                    </div>`;
+                }
+            });
+
+            html += `</div>`;
+        });
+    });
+
+    html += `</div>`;
+    document.getElementById("app").innerHTML = html;
+}
+
+function drag(ev){
+    let el = ev.target.closest(".file");
+    ev.dataTransfer.setData("text/plain", el.id);
+}
+
+function allowDrop(ev){ ev.preventDefault(); }
+
+function drop(ev,type,kind){
+    ev.preventDefault();
+    let name = ev.dataTransfer.getData("text/plain");
+
+    fetch("/move",{
+        method:"POST",
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name,type,kind})
+    }).then(load);
+}
+
+function del(name){
+    fetch("/delete",{
+        method:"POST",
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name})
+    }).then(load);
+}
+
+document.getElementById("uploadForm").onsubmit = async (e)=>{
+    e.preventDefault();
+    let form = new FormData(e.target);
+    await fetch("/upload",{ method:"POST", body:form });
+    load();
+};
+
+// -------- PROCESS --------
+function process(){
+
+    document.getElementById("tableArea").innerHTML = "⏳ Processing...";
+
+    fetch("/process")
+    .then(res => res.json())
+    .then(res => {
+
+        let data = res.data;
+
+        let html = `<h2 style="color:green;">✅ Files Generated Successfully</h2>`;
+
+        for(let kind in data){
+
+            html += `<h2>${kind}</h2>`;
+
+            for(let loc in data[kind]){
+
+                let d = data[kind][loc];
+
+                html += `
+                <div style="border:1px solid #ccc; margin:10px; padding:10px; background:white;">
+                    <h3>${loc}</h3>
+                    <p><b>File:</b> ${d.file}</p>
+                    <p><b>Total Rows:</b> ${d.rows}</p>
+                `;
+
+                if(d.preview.length){
+
+                    let cols = Object.keys(d.preview[0]);
+
+                    html += "<table><tr>";
+                    cols.forEach(c=> html += `<th>${c}</th>`);
+                    html += "</tr>";
+
+                    d.preview.forEach(r=>{
+                        html += "<tr>";
+                        cols.forEach(c=> html += `<td>${r[c]}</td>`);
+                        html += "</tr>";
+                    });
+
+                    html += "</table>";
+                }
+
+                html += "</div>";
+            }
+        }
+
+        document.getElementById("tableArea").innerHTML = html;
+    });
+}
+
+load();
+
+</script>
+
+</body>
+</html>
