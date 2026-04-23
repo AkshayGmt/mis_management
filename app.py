@@ -49,39 +49,46 @@ def location_page():
 # =========================================================
 # 🔥 STOCK API
 # =========================================================
+from engines.stock_engine import run_stock
+
 @app.route("/stock-upload", methods=["POST"])
 def stock_upload():
     files = request.files.getlist("files")
     output = run_stock(files)
 
-    return send_file(
-        output,
-        download_name="stock_output.zip",
-        as_attachment=True
-    )
+    return send_file(output,
+                     download_name="stock_output.zip",
+                     as_attachment=True)
+
 
 
 # =========================================================
 # 🔥 SOLD API
 # =========================================================
+from engines.sold_engine import run_sold
+
 @app.route("/sold-upload", methods=["POST"])
 def sold_upload():
     files = request.files.getlist("files")
     output = run_sold(files)
 
-    return send_file(
-        output,
-        download_name="sold_output.zip",
-        as_attachment=True
-    )
+    return send_file(output,
+                     download_name="sold_output.zip",
+                     as_attachment=True)
+
 
 
 # =========================================================
 # 🔥 COMBINE API
 # =========================================================
+# =========================================================
+# 🔥 COMBINE ENGINE CONNECT
+# =========================================================
+
 @app.route("/combine-upload", methods=["POST"])
 def combine_upload():
     files = request.files.getlist("files")
+
     output = run_combine(files)
 
     return send_file(
@@ -89,6 +96,7 @@ def combine_upload():
         download_name="combine_output.zip",
         as_attachment=True
     )
+
 
 
 # =========================================================
