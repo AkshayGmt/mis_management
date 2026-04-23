@@ -1,21 +1,19 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_file
 import pandas as pd
-import os
+import os, zipfile
+from io import BytesIO
 
 app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = "outputs"
-
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 files_data = []
 
 # ---------------- HOME ----------------
 @app.route("/")
 def home():
-    return render_template("in.html")
+    return render_template("index.html")
 
 
 # ---------------- HEADER DETECT ----------------
@@ -23,36 +21,31 @@ def detect_header(df):
     keywords = ["shape", "color", "clarity", "location", "country", "origin"]
 
     for i, row in df.iterrows():
-        row_values = [str(x).lower() for x in row.values]
-        matches = sum(1 for k in keywords if any(k in cell for cell in row_values))
-        if matches >= 2:
+        vals = [str(x).lower() for x in row.values]
+        if sum(any(k in v for v in vals) for k in keywords) >= 2:
             return i
-
     return None
 
 
 # ---------------- PROCESS FILE ----------------
-def process_file(filepath):
+def process_file(path):
     try:
-        df = pd.read_excel(filepath, header=None)
-        header_row = detect_header(df)
-
-        if header_row is None:
+        df = pd.read_excel(path, header=None)
+        h = detect_header(df)
+        if h is None:
             return None
-
-        df = pd.read_excel(filepath, header=header_row)
+        df = pd.read_excel(path, header=h)
         return df
-
-    except Exception as e:
-        print("ERROR:", e)
+    except:
         return None
 
 
-# ---------------- PROCESS ----------------
-@app.route("/process")
-def process_all():
+# ---------------- COMMON ENGINE ----------------
+def build_data():
 
-    categories = ["SOLD", "TOTAL", "CURRENT"]
+    # 🔥 DYNAMIC CATEGORY
+    categories = list(set(f["type"] for f in files_data))
+
     kinds = ["DZ", "FANCY"]
     locations = ["USA", "INDIA"]
 
@@ -61,83 +54,93 @@ def process_all():
         for c in categories
     }
 
-    # -------- FILE LOOP --------
     for f in files_data:
 
         df = process_file(f["path"])
         if df is None:
             continue
 
-        category = f["type"]
+        cat = f["type"]
         kind = f["kind"]
 
         cols = [c.lower().strip() for c in df.columns]
 
         loc_col = None
-        for x in ["location", "country", "origin"]:
+        for x in ["location","country","origin"]:
             if x in cols:
                 loc_col = df.columns[cols.index(x)]
                 break
 
         if loc_col is None:
-            result[category][kind]["INDIA"].append(df)
+            result[cat][kind]["INDIA"].append(df)
             continue
 
         df[loc_col] = df[loc_col].astype(str).str.lower()
 
-        df_usa = df[df[loc_col].str.contains("usa|united states|us|america", na=False)]
-        df_india = df[~df[loc_col].str.contains("usa|united states|us|america", na=False)]
+        usa = df[df[loc_col].str.contains("usa|us|america", na=False)]
+        india = df[~df[loc_col].str.contains("usa|us|america", na=False)]
 
-        if not df_usa.empty:
-            result[category][kind]["USA"].append(df_usa)
+        if not usa.empty:
+            result[cat][kind]["USA"].append(usa)
+        if not india.empty:
+            result[cat][kind]["INDIA"].append(india)
 
-        if not df_india.empty:
-            result[category][kind]["INDIA"].append(df_india)
+    return result, categories
 
-    # -------- HELPERS --------
-    def find(df, names):
-        for n in names:
-            for c in df.columns:
-                if n in c:
-                    return c
-        return None
 
-    def group_df(df):
-        df.columns = [c.lower().strip() for c in df.columns]
+def find(df, names):
+    for n in names:
+        for c in df.columns:
+            if n in c:
+                return c
+    return None
 
-        gcols = []
-        for key in ["shape","size","color","clarity","lab","type"]:
-            for c in df.columns:
-                if key in c:
-                    gcols.append(c)
-                    break
 
-        count = find(df, ["pcs","qty","count"])
-        carat = find(df, ["carat","cts","weight"])
-        amount = find(df, ["amount","value","price"])
+def group_df(df):
+    df.columns = [c.lower().strip() for c in df.columns]
 
-        agg = {}
-        if count: agg[count] = "sum"
-        if carat: agg[carat] = "sum"
-        if amount: agg[amount] = "sum"
+    gcols = []
+    for key in ["shape","size","color","clarity","lab","type"]:
+        for c in df.columns:
+            if key in c:
+                gcols.append(c)
+                break
 
-        if not gcols or not agg:
-            return pd.DataFrame()
+    count = find(df, ["pcs","qty","count"])
+    carat = find(df, ["carat","cts","weight"])
+    amount = find(df, ["amount","value","price"])
 
-        df = df.groupby(gcols, dropna=False).agg(agg).reset_index()
+    agg = {}
+    if count: agg[count] = "sum"
+    if carat: agg[carat] = "sum"
+    if amount: agg[amount] = "sum"
 
-        rename = {}
-        if count: rename[count] = "count"
-        if carat: rename[carat] = "carat"
-        if amount: rename[amount] = "amount"
+    if not gcols or not agg:
+        return pd.DataFrame()
 
-        return df.rename(columns=rename)
+    df = df.groupby(gcols, dropna=False).agg(agg).reset_index()
 
-    final_output = {}
+    rename = {}
+    if count: rename[count] = "count"
+    if carat: rename[carat] = "carat"
+    if amount: rename[amount] = "amount"
 
-    # -------- MAIN LOOP --------
+    return df.rename(columns=rename)
+
+
+# ---------------- PREVIEW ----------------
+@app.route("/process-preview")
+def preview():
+
+    data, categories = build_data()
+
+    kinds = ["DZ","FANCY"]
+    locations = ["USA","INDIA"]
+
+    output = {}
+
     for k in kinds:
-        final_output[k] = {}
+        output[k] = {}
 
         for l in locations:
 
@@ -145,15 +148,13 @@ def process_all():
 
             for c in categories:
 
-                dfs = result[c][k][l]
-                if not dfs:
-                    continue
+                dfs = data[c][k][l]
+                if not dfs: continue
 
                 df = pd.concat(dfs, ignore_index=True)
                 g = group_df(df)
 
-                if g.empty:
-                    continue
+                if g.empty: continue
 
                 g = g.rename(columns={
                     "count": f"{c.lower()} count",
@@ -161,95 +162,128 @@ def process_all():
                     "amount": f"{c.lower()} amount"
                 })
 
-                if merged is None:
-                    merged = g
-                else:
-                    merged = pd.merge(merged, g, how="outer")
+                merged = g if merged is None else pd.merge(merged, g, how="outer")
 
             if merged is None:
-                final_output[k][l] = []
+                output[k][l] = []
                 continue
 
             merged.fillna(0, inplace=True)
+            output[k][l] = merged.head(10).to_dict("records")
 
-            # -------- TOTAL ROW --------
-            total = {}
-            for col in merged.columns:
-                if merged[col].dtype != "object":
-                    total[col] = merged[col].sum()
-                else:
-                    total[col] = "TOTAL"
+    return jsonify({"data": output})
 
-            merged = pd.concat([pd.DataFrame([total]), merged], ignore_index=True)
 
-            # -------- SAVE FILE --------
-            file_path = f"{OUTPUT_FOLDER}/{k}_{l}.xlsx"
-            merged.to_excel(file_path, index=False)
+# ---------------- DOWNLOAD ----------------
+@app.route("/download")
+def download():
 
-            final_output[k][l] = {
-                "file": file_path,
-                "rows": len(merged),
-                "preview": merged.head(10).to_dict(orient="records")
-            }
+    data, categories = build_data()
 
-    return jsonify({
-        "status": "DONE",
-        "data": final_output
-    })
+    kinds = ["DZ","FANCY"]
+    locations = ["USA","INDIA"]
+
+    mem = BytesIO()
+
+    with zipfile.ZipFile(mem, "w") as z:
+
+        for k in kinds:
+            for l in locations:
+
+                merged = None
+
+                for c in categories:
+
+                    dfs = data[c][k][l]
+                    if not dfs: continue
+
+                    df = pd.concat(dfs, ignore_index=True)
+                    g = group_df(df)
+
+                    if g.empty: continue
+
+                    g = g.rename(columns={
+                        "count": f"{c.lower()} count",
+                        "carat": f"{c.lower()} carat",
+                        "amount": f"{c.lower()} amount"
+                    })
+
+                    merged = g if merged is None else pd.merge(merged, g, how="outer")
+
+                if merged is None:
+                    continue
+
+                merged.fillna(0, inplace=True)
+
+                total = {c: merged[c].sum() if merged[c].dtype!="object" else "TOTAL"
+                         for c in merged.columns}
+
+                merged = pd.concat([pd.DataFrame([total]), merged], ignore_index=True)
+
+                buf = BytesIO()
+                merged.to_excel(buf, index=False)
+
+                z.writestr(f"{k}_{l}.xlsx", buf.getvalue())
+
+    mem.seek(0)
+
+    # cleanup
+    for f in files_data:
+        try: os.remove(f["path"])
+        except: pass
+    files_data.clear()
+
+    return send_file(mem, download_name="MIS_Output.zip", as_attachment=True)
 
 
 # ---------------- UPLOAD ----------------
 @app.route("/upload", methods=["POST"])
 def upload():
 
-    uploaded_files = request.files.getlist("files")
-    file_type = request.form.get("type")
+    for f in request.files.getlist("files"):
 
-    for file in uploaded_files:
-
-        filename = file.filename
-        path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(path)
-
-        kind = "DZ" if "dz" in filename.lower() else "FANCY"
+        path = os.path.join(UPLOAD_FOLDER, f.filename)
+        f.save(path)
 
         files_data.append({
-            "name": filename,
-            "type": file_type,
-            "kind": kind,
+            "name": f.filename,
+            "type": request.form.get("type"),   # 🔥 dynamic now
+            "kind": "DZ" if "dz" in f.filename.lower() else "FANCY",
             "path": path
         })
 
     return "OK"
 
 
-# ---------------- FILE LIST ----------------
+# ---------------- FILES ----------------
 @app.route("/files")
-def get_files():
+def files():
     return jsonify(files_data)
 
 
 # ---------------- MOVE ----------------
 @app.route("/move", methods=["POST"])
 def move():
-    data = request.json
-
+    d = request.json
     for f in files_data:
-        if f["name"] == data["name"]:
-            f["type"] = data["type"]
-            f["kind"] = data["kind"]
-
+        if f["name"] == d["name"]:
+            f["type"] = d["type"]
+            f["kind"] = d["kind"]
     return "OK"
 
 
 # ---------------- DELETE ----------------
 @app.route("/delete", methods=["POST"])
 def delete():
-    data = request.json
-
     global files_data
-    files_data = [f for f in files_data if f["name"] != data["name"]]
+    name = request.json["name"]
 
+    for f in files_data:
+        if f["name"] == name:
+            try: os.remove(f["path"])
+            except: pass
+
+    files_data = [f for f in files_data if f["name"] != name]
     return "OK"
 
 
