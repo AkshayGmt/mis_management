@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>MIS System</title>
+
+<style>
+body { font-family: Arial; background:#eef3f8; padding:20px; }
+
+.grid {
+    display:grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap:10px;
+}
+
+.box {
+    background:white;
+    border:1px solid #dcdcdc;
+    padding:10px;
+    min-height:140px;
+    border-radius:6px;
+}
+
+.file {
+    background:#3498db;
+    color:white;
+    padding:6px;
+    margin:5px 0;
+    cursor:grab;
+    font-size:12px;
+    display:flex;
+    justify-content:space-between;
+    border-radius:4px;
+}
+
+button {
+    margin:5px;
+    padding:6px 10px;
+    border:none;
+    background:#2c3e50;
+    color:white;
+    cursor:pointer;
+    border-radius:4px;
+}
+
+button:hover {
+    background:#1a252f;
+}
+
+table {
+    width:100%;
+    margin-top:20px;
+    border-collapse: collapse;
+    background:white;
+}
+
+th, td {
+    border:1px solid #ccc;
+    padding:6px;
+    font-size:12px;
+    text-align:center;
+}
+
+th {
+    background:#2c3e50;
+    color:white;
+}
+</style>
+</head>
+
+<body>
+
+<h2>MIS SYSTEM</h2>
+
+<!-- 🔹 UPLOAD -->
+<form id="uploadForm">
+
+<select id="typeSelect">
+    <option value="SOLD">SOLD</option>
+    <option value="TOTAL">TOTAL</option>
+    <option value="CURRENT">CURRENT</option>
+    <option value="CUSTOM">➕ Custom</option>
+</select>
+
+<input type="text" id="customType"
+       placeholder="Enter category"
+       style="display:none; margin-left:10px;">
+
+<br><br>
+
+<input type="file" id="fileInput" multiple>
+
+<button type="submit">Upload</button>
+
+</form>
+
+<hr>
+
+<!-- 🔹 GRID -->
+<div id="app"></div>
+
+<button onclick="process()">START COMBINE</button>
+
+<hr>
+
+<!-- 🔹 OUTPUT -->
+<div id="tableArea"></div>
+
+<script>
+
+let files = [];
+
+// ---------------- LOAD FILES ----------------
+async function load(){
+    let res = await fetch("/files");
+    files = await res.json();
+    render();
+}
+
+// ---------------- CATEGORY INPUT ----------------
+document.getElementById("typeSelect").onchange = function(){
+    document.getElementById("customType").style.display =
+        this.value === "CUSTOM" ? "block" : "none";
+};
+
+// ---------------- RENDER GRID ----------------
+function render(){
+
+    let html = `<div class="grid">`;
+
+    let types = [...new Set(files.map(f => f.type))];
+
+    if(types.length === 0){
+        types = ["SOLD","TOTAL","CURRENT"];
+    }
+
+    let kinds = ["DZ","FANCY"];
+
+    types.forEach(t=>{
+        kinds.forEach(k=>{
+
+            html += `
+            <div class="box"
+                 ondrop="drop(event,'${t}','${k}')"
+                 ondragover="allowDrop(event)">
+                <b>${t} - ${k}</b>
+            `;
+
+            files.forEach(f=>{
+                if(f.type==t && f.kind==k){
+                    html += `
+                    <div class="file"
+                         draggable="true"
+                         ondragstart="drag(event)"
+                         id="${f.name}">
+                        <span>${f.name}</span>
+                        <button onclick="del('${f.name}')">X</button>
+                    </div>`;
+                }
+            });
+
+            html += `</div>`;
+        });
+    });
+
+    html += `</div>`;
+    document.getElementById("app").innerHTML = html;
+}
+
+// ---------------- DRAG ----------------
+function drag(ev){
+    let el = ev.target.closest(".file");
+    ev.dataTransfer.setData("text/plain", el.id);
+}
+
+function allowDrop(ev){ ev.preventDefault(); }
+
+function drop(ev,type,kind){
+    ev.preventDefault();
+    let name = ev.dataTransfer.getData("text/plain");
+
+    fetch("/move",{
+        method:"POST",
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name,type,kind})
+    }).then(load);
+}
+
+// ---------------- DELETE ----------------
+function del(name){
+    fetch("/delete",{
+        method:"POST",
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name})
+    }).then(load);
+}
+
+// ---------------- UPLOAD ----------------
+document.getElementById("uploadForm").onsubmit = async (e)=>{
+    e.preventDefault();
+
+    let form = new FormData();
+
+    let type =
+        document.getElementById("typeSelect").value === "CUSTOM"
+        ? document.getElementById("customType").value.trim()
+        : document.getElementById("typeSelect").value;
+
+    if(!type){
+        alert("Enter category name");
+        return;
+    }
+
+    form.append("type", type);
+
+    let filesInput = document.getElementById("fileInput").files;
+
+    for(let f of filesInput){
+        form.append("files", f);
+    }
+
+    await fetch("/upload",{
+        method:"POST",
+        body:form
+    });
+
+    e.target.reset();
+    document.getElementById("customType").style.display = "none";
+
+    load();
+};
+
+// ---------------- PROCESS ----------------
+function process(){
+
+    document.getElementById("tableArea").innerHTML = "⏳ Processing...";
+
+    // 🔹 PREVIEW
+    fetch("/process-preview")
+    .then(res => res.json())
+    .then(res => {
+
+        let data = res.data;
+
+        let html = "<h2>Preview</h2>";
+
+        for(let kind in data){
+
+            html += `<h3>${kind}</h3>`;
+
+            for(let loc in data[kind]){
+
+                let rows = data[kind][loc];
+
+                if(!rows.length) continue;
+
+                let cols = Object.keys(rows[0]);
+
+                html += "<table><tr>";
+                cols.forEach(c => html += `<th>${c}</th>`);
+                html += "</tr>";
+
+                rows.forEach(r=>{
+                    html += "<tr>";
+                    cols.forEach(c => html += `<td>${r[c]}</td>`);
+                    html += "</tr>";
+                });
+
+                html += "</table>";
+            }
+        }
+
+        document.getElementById("tableArea").innerHTML = html;
+
+        // 🔥 AUTO DOWNLOAD ZIP
+        window.open("/download","_blank");
+    })
+    .catch(err=>{
+        document.getElementById("tableArea").innerHTML =
+            "<p style='color:red;'>Error: " + err.message + "</p>";
+    });
+}
+
+// ---------------- INIT ----------------
+load();
+
+</script>
+
+</body>
+</html>
