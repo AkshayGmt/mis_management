@@ -6,6 +6,7 @@ from engines.stock_engine import run_stock
 from engines.sold_engine import run_sold
 from engines.combine_engine import run_combine
 from engines.graph_engine import run_graph
+from engines.sort_engine import run_sort
 
 app = Flask(__name__)
 
@@ -94,6 +95,20 @@ def combine_upload():
     return send_file(
         output,
         download_name="combine_output.zip",
+        as_attachment=True
+    )
+
+
+# sort
+@app.route("/sort-upload", methods=["POST"])
+def sort_upload():
+    files = request.files.getlist("files")
+
+    output = run_sort(files)
+
+    return send_file(
+        output,
+        download_name="sorted_output.zip",
         as_attachment=True
     )
 
