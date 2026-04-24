@@ -1,0 +1,271 @@
+from flask import Flask, render_template, request, jsonify, send_file
+import pandas as pd
+import io
+from openpyxl.chart import BarChart, Reference
+
+app = Flask(__name__)
+
+# -------------------------------
+# GLOBAL STORAGE FOR EXPORT
+# -------------------------------
+LAST_RESULT = None
+LAST_ORIGINAL_DF = None  # ✅ NEW: Store original dataframe
+LAST_ROUND2 = None  # ✅ NEW: Store Round 2 result
+
+# -------------------------------
+# KEEP OLD LOGIC (UNCHANGED)
+# -------------------------------
+def extract_categories(columns):
+    categories = set()
+    for col in columns:
+        parts = col.split()
+        if len(parts) >= 2:
+            prefix = parts[0]
+            metric = parts[1]
+            if metric in ['count', 'carat', 'amount']:
+                categories.add(prefix)
+    return list(categories)
+
+
+def read_file_safely(file):
+    try:
+        return pd.read_csv(file, encoding='utf-8')
+    except:
+        file.seek(0)
+        try:
+            return pd.read_csv(file, encoding='latin1')
+        except:
+            file.seek(0)
+            return pd.read_csv(file, encoding='cp1252')
+
+
+def process_dynamic(df, group_cols):
+    df.columns = df.columns.str.strip().str.lower()
+
+    categories = extract_categories(df.columns)
+
+    agg_dict = {}
+    for cat in categories:
+        agg_dict[f"{cat} count"] = "sum"
+        agg_dict[f"{cat} carat"] = "sum"
+        agg_dict[f"{cat} amount"] = "sum"
+
+    grouped = df.groupby(group_cols).agg(agg_dict).reset_index()
+
+    for cat in categories:
+        grouped[f"{cat}_avg"] = (
+            grouped[f"{cat} amount"] / 
+            grouped[f"{cat} carat"].replace(0, 1)
+        )
+
+    return grouped.fillna(0), categories
+
+
+# -------------------------------
+# ✅ FIXED ROUND 2 LOGIC
+# -------------------------------
+def process_round2(df):
+    """Process Round 2 report with better error handling"""
+    
+    # Make a copy to avoid modifying original
+    df = df.copy()
+    df.columns = df.columns.str.strip().str.lower()
+
+    required = [
+        "shape",
+        "current carat",
+        "current amount",
+        "sold carat",
+        "sold amount"
+    ]
+
+    # ✅ Better error message showing available columns
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        available = list(df.columns)
+        raise ValueError(
+            f"Missing required columns: {', '.join(missing)}. "
+            f"Available columns: {', '.join(available)}"
+        )
+
+    grouped = df.groupby(["shape"]).agg({
+        "current carat": "sum",
+        "current amount": "sum",
+        "sold carat": "sum",
+        "sold amount": "sum"
+    }).reset_index()
+
+    # Calculate averages
+    grouped["current avg"] = (
+        grouped["current amount"] / 
+        grouped["current carat"].replace(0, 1)
+    ).round(2)
+    
+    grouped["sold avg"] = (
+        grouped["sold amount"] / 
+        grouped["sold carat"].replace(0, 1)
+    ).round(2)
+
+    # Round all numeric columns
+    numeric_cols = ["current carat", "current amount", "sold carat", "sold amount"]
+    for col in numeric_cols:
+        grouped[col] = grouped[col].round(2)
+
+    # ✅ Filter but keep track of what was removed
+    original_count = len(grouped)
+    grouped = grouped[ 
+        (grouped["current carat"] > 0) | 
+        (grouped["current amount"] > 0)
+    ]
+    
+    # ✅ Log warning if rows were removed
+    if len(grouped) < original_count:
+        print(f"WARNING: {original_count - len(grouped)} shapes filtered out (both current carat and amount were 0)")
+
+    if grouped.empty:
+        print("WARNING: All rows filtered out - all shapes have 0 current carat AND 0 current amount")
+
+    return grouped
+
+
+# -------------------------------
+# ROUTES
+# -------------------------------
+@app.route('/')
+def index():
+    return render_template("index.html")
+
+
+@app.route('/generate', methods=['POST'])
+def generate():
+    global LAST_RESULT, LAST_ORIGINAL_DF, LAST_ROUND2
+
+    try:
+        file = request.files['file']
+        filename = file.filename.lower()
+
+        # Read file
+        df = pd.read_excel(file) if filename.endswith('.xlsx') else read_file_safely(file)
+        
+        # ✅ Store original dataframe for later use
+        LAST_ORIGINAL_DF = df.copy()
+        
+        df.columns = df.columns.str.strip().str.lower()
+
+        report_type = request.form.get("report_type")
+
+        if report_type == "1":
+            group_cols = ['shape', 'color', 'clarity']
+        elif report_type == "2":
+            group_cols = ['shape', 'size range']
+        else:
+            group_cols = ['size range', 'color', 'clarity']
+
+        # Process dynamic data
+        result, categories = process_dynamic(df, group_cols)
+        LAST_RESULT = result
+
+        # ✅ Process Round 2 data with error handling
+        round2_data = []
+        round2_error = None
+        
+        try:
+            round2_result = process_round2(df)
+            LAST_ROUND2 = round2_result  # ✅ Store for Excel export
+            round2_data = round2_result.to_dict(orient='records')
+            
+            # ✅ Check if result is empty
+            if not round2_data:
+                round2_error = "No data available - all shapes have 0 current carat and 0 current amount"
+                
+        except ValueError as e:
+            # Column missing error
+            round2_error = str(e)
+            print(f"Round 2 error: {e}")
+            
+        except Exception as e:
+            # Other errors
+            round2_error = f"Round 2 processing failed: {str(e)}"
+            print(f"Round 2 unexpected error: {e}")
+
+        # Shape-wise grouping
+        shape_groups = {}
+        if 'shape' in result.columns:
+            for shape, group in result.groupby('shape'):
+                shape_groups[shape] = group.to_dict(orient='records')
+        else:
+            shape_groups["all"] = result.to_dict(orient='records')
+
+        # ✅ Return response with error info if needed
+        response = {
+            "categories": categories,
+            "data": result.to_dict(orient='records'),
+            "shape_groups": shape_groups,
+            "round2": round2_data
+        }
+        
+        if round2_error:
+            response["round2_error"] = round2_error
+
+        return jsonify(response)
+
+    except Exception as e:
+        # ✅ Catch any other errors and return meaningful message
+        return jsonify({
+            "error": f"Failed to process file: {str(e)}"
+        }), 400
+
+
+# -------------------------------
+# EXCEL DOWNLOAD WITH GRAPH
+# -------------------------------
+@app.route('/download_excel')
+def download_excel():
+    global LAST_RESULT, LAST_ROUND2
+
+    output = io.BytesIO()
+
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # MAIN REPORT
+        if LAST_RESULT is not None:
+            LAST_RESULT.to_excel(writer, index=False, sheet_name="MAIN_REPORT")
+
+            # Add chart to MAIN_REPORT
+            workbook = writer.book
+            sheet = workbook["MAIN_REPORT"]
+
+            # Define data range for the chart
+            data = Reference(sheet,
+                             min_col=3, min_row=1,  # 'amount' column
+                             max_col=4, max_row=len(LAST_RESULT) + 1)  # 'carat' column
+
+            # Create a bar chart
+            chart = BarChart()
+            chart.add_data(data, titles_from_data=True)
+            chart.title = "Amount vs Carat"
+            chart.x_axis.title = "Shapes"
+            chart.y_axis.title = "Value"
+
+            # Add the chart to the sheet
+            sheet.add_chart(chart, "E5")  # Position the chart at E5 cell
+
+        # ROUND 2 report
+        if LAST_ROUND2 is not None and not LAST_ROUND2.empty:
+            LAST_ROUND2.to_excel(writer, index=False, sheet_name="ROUND2")
+        else:
+            info_df = pd.DataFrame({
+                "Message": ["Round 2 data not available - check that your file has the required columns"]
+            })
+            info_df.to_excel(writer, index=False, sheet_name="ROUND2")
+
+    output.seek(0)
+
+    return send_file(
+        output,
+        download_name="diamond_report.xlsx",
+        as_attachment=True
+    )
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
