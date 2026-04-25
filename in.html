@@ -42,9 +42,7 @@ button {
     border-radius:4px;
 }
 
-button:hover {
-    background:#1a252f;
-}
+button:hover { background:#1a252f; }
 
 table {
     width:100%;
@@ -71,7 +69,6 @@ th {
 
 <h2>MIS SYSTEM</h2>
 
-<!-- 🔹 UPLOAD -->
 <form id="uploadForm">
 
 <select id="typeSelect">
@@ -95,40 +92,37 @@ th {
 
 <hr>
 
-<!-- 🔹 GRID -->
 <div id="app"></div>
 
 <button onclick="process()">START COMBINE</button>
 
 <hr>
 
-<!-- 🔹 OUTPUT -->
 <div id="tableArea"></div>
 
 <script>
 
 let files = [];
 
-// ---------------- LOAD FILES ----------------
+// LOAD FILES
 async function load(){
     let res = await fetch("/files");
     files = await res.json();
     render();
 }
 
-// ---------------- CATEGORY INPUT ----------------
+// CATEGORY INPUT
 document.getElementById("typeSelect").onchange = function(){
     document.getElementById("customType").style.display =
         this.value === "CUSTOM" ? "block" : "none";
 };
 
-// ---------------- RENDER GRID ----------------
+// RENDER GRID
 function render(){
 
     let html = `<div class="grid">`;
 
     let types = [...new Set(files.map(f => f.type))];
-
     if(types.length === 0){
         types = ["SOLD","TOTAL","CURRENT"];
     }
@@ -166,7 +160,7 @@ function render(){
     document.getElementById("app").innerHTML = html;
 }
 
-// ---------------- DRAG ----------------
+// DRAG
 function drag(ev){
     let el = ev.target.closest(".file");
     ev.dataTransfer.setData("text/plain", el.id);
@@ -185,7 +179,7 @@ function drop(ev,type,kind){
     }).then(load);
 }
 
-// ---------------- DELETE ----------------
+// DELETE
 function del(name){
     fetch("/delete",{
         method:"POST",
@@ -194,7 +188,7 @@ function del(name){
     }).then(load);
 }
 
-// ---------------- UPLOAD ----------------
+// UPLOAD
 document.getElementById("uploadForm").onsubmit = async (e)=>{
     e.preventDefault();
 
@@ -218,10 +212,7 @@ document.getElementById("uploadForm").onsubmit = async (e)=>{
         form.append("files", f);
     }
 
-    await fetch("/upload",{
-        method:"POST",
-        body:form
-    });
+    await fetch("/upload",{ method:"POST", body:form });
 
     e.target.reset();
     document.getElementById("customType").style.display = "none";
@@ -229,18 +220,16 @@ document.getElementById("uploadForm").onsubmit = async (e)=>{
     load();
 };
 
-// ---------------- PROCESS ----------------
+// PROCESS + DOWNLOAD
 function process(){
 
     document.getElementById("tableArea").innerHTML = "⏳ Processing...";
 
-    // 🔹 PREVIEW
     fetch("/process-preview")
     .then(res => res.json())
     .then(res => {
 
         let data = res.data;
-
         let html = "<h2>Preview</h2>";
 
         for(let kind in data){
@@ -250,7 +239,6 @@ function process(){
             for(let loc in data[kind]){
 
                 let rows = data[kind][loc];
-
                 if(!rows.length) continue;
 
                 let cols = Object.keys(rows[0]);
@@ -271,8 +259,14 @@ function process(){
 
         document.getElementById("tableArea").innerHTML = html;
 
-        // 🔥 AUTO DOWNLOAD ZIP
-        window.open("/download","_blank");
+        // ✅ DOWNLOAD
+        const a = document.createElement("a");
+        a.href = "/download";
+        a.download = "MIS_Output.zip";
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
     })
     .catch(err=>{
         document.getElementById("tableArea").innerHTML =
@@ -280,7 +274,6 @@ function process(){
     });
 }
 
-// ---------------- INIT ----------------
 load();
 
 </script>
