@@ -10,16 +10,14 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 files_data = []
 
-# ---------------- HOME ----------------
+
 @app.route("/")
 def home():
     return render_template("index.html")
 
 
-# ---------------- HEADER DETECT ----------------
 def detect_header(df):
-    keywords = ["shape", "color", "clarity", "location", "country", "origin"]
-
+    keywords = ["shape","color","clarity","location","country","origin"]
     for i, row in df.iterrows():
         vals = [str(x).lower() for x in row.values]
         if sum(any(k in v for v in vals) for k in keywords) >= 2:
@@ -27,65 +25,17 @@ def detect_header(df):
     return None
 
 
-# ---------------- PROCESS FILE ----------------
 def process_file(path):
     try:
         df = pd.read_excel(path, header=None)
         h = detect_header(df)
         if h is None:
+            print("Header not found:", path)
             return None
-        df = pd.read_excel(path, header=h)
-        return df
-    except:
+        return pd.read_excel(path, header=h)
+    except Exception as e:
+        print("Error reading:", path, e)
         return None
-
-
-# ---------------- COMMON ENGINE ----------------
-def build_data():
-
-    # 🔥 DYNAMIC CATEGORY
-    categories = list(set(f["type"] for f in files_data))
-
-    kinds = ["DZ", "FANCY"]
-    locations = ["USA", "INDIA"]
-
-    result = {
-        c: {k: {"USA": [], "INDIA": []} for k in kinds}
-        for c in categories
-    }
-
-    for f in files_data:
-
-        df = process_file(f["path"])
-        if df is None:
-            continue
-
-        cat = f["type"]
-        kind = f["kind"]
-
-        cols = [c.lower().strip() for c in df.columns]
-
-        loc_col = None
-        for x in ["location","country","origin"]:
-            if x in cols:
-                loc_col = df.columns[cols.index(x)]
-                break
-
-        if loc_col is None:
-            result[cat][kind]["INDIA"].append(df)
-            continue
-
-        df[loc_col] = df[loc_col].astype(str).str.lower()
-
-        usa = df[df[loc_col].str.contains("usa|us|america", na=False)]
-        india = df[~df[loc_col].str.contains("usa|us|america", na=False)]
-
-        if not usa.empty:
-            result[cat][kind]["USA"].append(usa)
-        if not india.empty:
-            result[cat][kind]["INDIA"].append(india)
-
-    return result, categories
 
 
 def find(df, names):
@@ -128,12 +78,47 @@ def group_df(df):
     return df.rename(columns=rename)
 
 
-# ---------------- PREVIEW ----------------
+def build_data():
+    categories = list(set(f["type"] for f in files_data))
+    kinds = ["DZ","FANCY"]
+
+    result = {c:{k:{"USA":[],"INDIA":[]} for k in kinds} for c in categories}
+
+    for f in files_data:
+
+        df = process_file(f["path"])
+        if df is None:
+            continue
+
+        cat, kind = f["type"], f["kind"]
+
+        cols = [c.lower().strip() for c in df.columns]
+        loc_col = None
+
+        for x in ["location","country","origin"]:
+            if x in cols:
+                loc_col = df.columns[cols.index(x)]
+                break
+
+        if loc_col is None:
+            result[cat][kind]["INDIA"].append(df)
+            continue
+
+        df[loc_col] = df[loc_col].astype(str).str.lower()
+
+        usa = df[df[loc_col].str.contains("usa|us|america", na=False)]
+        india = df[~df[loc_col].str.contains("usa|us|america", na=False)]
+
+        if not usa.empty: result[cat][kind]["USA"].append(usa)
+        if not india.empty: result[cat][kind]["INDIA"].append(india)
+
+    return result, categories
+
+
 @app.route("/process-preview")
 def preview():
 
     data, categories = build_data()
-
     kinds = ["DZ","FANCY"]
     locations = ["USA","INDIA"]
 
@@ -174,18 +159,18 @@ def preview():
     return jsonify({"data": output})
 
 
-# ---------------- DOWNLOAD ----------------
 @app.route("/download")
 def download():
 
     data, categories = build_data()
-
     kinds = ["DZ","FANCY"]
     locations = ["USA","INDIA"]
 
     mem = BytesIO()
 
-    with zipfile.ZipFile(mem, "w") as z:
+    with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as z:
+
+        file_added = False
 
         for k in kinds:
             for l in locations:
@@ -215,8 +200,8 @@ def download():
 
                 merged.fillna(0, inplace=True)
 
-                total = {c: merged[c].sum() if merged[c].dtype!="object" else "TOTAL"
-                         for c in merged.columns}
+                total = {col: (merged[col].sum() if merged[col].dtype!="object" else "TOTAL")
+                         for col in merged.columns}
 
                 merged = pd.concat([pd.DataFrame([total]), merged], ignore_index=True)
 
@@ -224,19 +209,28 @@ def download():
                 merged.to_excel(buf, index=False)
 
                 z.writestr(f"{k}_{l}.xlsx", buf.getvalue())
+                file_added = True
+
+        if not file_added:
+            z.writestr("NO_DATA.txt","No valid data found")
 
     mem.seek(0)
 
-    # cleanup
+    response = send_file(
+        mem,
+        download_name="MIS_Output.zip",
+        as_attachment=True,
+        mimetype="application/zip"
+    )
+
     for f in files_data:
         try: os.remove(f["path"])
         except: pass
     files_data.clear()
 
-    return send_file(mem, download_name="MIS_Output.zip", as_attachment=True)
+    return response
 
 
-# ---------------- UPLOAD ----------------
 @app.route("/upload", methods=["POST"])
 def upload():
 
@@ -247,7 +241,7 @@ def upload():
 
         files_data.append({
             "name": f.filename,
-            "type": request.form.get("type"),   # 🔥 dynamic now
+            "type": request.form.get("type"),
             "kind": "DZ" if "dz" in f.filename.lower() else "FANCY",
             "path": path
         })
@@ -255,13 +249,11 @@ def upload():
     return "OK"
 
 
-# ---------------- FILES ----------------
 @app.route("/files")
 def files():
     return jsonify(files_data)
 
 
-# ---------------- MOVE ----------------
 @app.route("/move", methods=["POST"])
 def move():
     d = request.json
@@ -272,7 +264,6 @@ def move():
     return "OK"
 
 
-# ---------------- DELETE ----------------
 @app.route("/delete", methods=["POST"])
 def delete():
     global files_data
@@ -287,6 +278,5 @@ def delete():
     return "OK"
 
 
-# ---------------- RUN ----------------
 if __name__ == "__main__":
     app.run(debug=True)
