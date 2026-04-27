@@ -1,6 +1,8 @@
 from flask import Flask, request, send_file, render_template_string
 import pandas as pd
 from io import BytesIO
+import zipfile
+import re
 
 app = Flask(__name__)
 
@@ -15,84 +17,124 @@ SHAPE_ORDER = [
     "HEXAGON","HEART"
 ]
 
-SIZE_ORDER = [
-    "10.000-10.999","9.000-9.999","8.000-8.999","7.000-7.999",
-    "6.000-6.999","5.500-5.999","5.000-5.499","4.500-4.749",
-    "4.250-4.499","4.000-4.249","3.750-3.999","3.500-3.749",
-    "3.250-3.499","3.000-3.249","2.750-2.999","2.500-2.749",
-    "2.250-2.499","2.000-2.249","1.900-1.999","1.800-1.899",
-    "1.700-1.799","1.600-1.699","1.500-1.599","1.400-1.499",
-    "1.300-1.399","1.200-1.299","1.100-1.199","1.000-1.099",
-    "0.960-0.999","0.900-0.959","0.700-0.799","0.500-0.599","0.400-0.459"
-]
+COLOR_ORDER = ["D","E","F","G","H","I","J","K","L","M","N","O"]
+
+CLARITY_ORDER = ["FL","IF","VVS1","VVS2","VS1","VS2","SI1","SI2","SI3"]
 
 # ---------------- CLEAN FUNCTIONS ---------------- #
 
 def clean_text(x):
-    if pd.isna(x):
-        return ""
+    if pd.isna(x) or str(x).strip() == "":
+        return "0"
     return str(x).strip().upper()
 
-def normalize_size(x):
+# ✅ IMPROVED COLOR NORMALIZATION
+def normalize_color(x):
     if pd.isna(x):
-        return ""
-
+        return "0"
     x = str(x).upper().strip()
 
-    # FIX ALL ISSUES:
-    x = x.replace(" ", "")
-    x = x.replace("–", "-")
-    x = x.replace("—", "-")
+    # Remove non-letters (/, +, spaces, etc.)
+    x = re.sub(r'[^A-Z]', '', x)
+
+    # If multiple letters (like GH), take first
+    if len(x) > 1:
+        x = x[0]
 
     return x
 
+# ✅ FIXED CLARITY NORMALIZATION
+def normalize_clarity(x):
+    if pd.isna(x):
+        return "0"
+    x = str(x).upper().strip()
+    x = re.sub(r'[^A-Z0-9]', '', x)
+    return x
+
+# ✅ SIZE PARSER
+def size_max_value(x):
+    if pd.isna(x) or str(x).strip() == "":
+        return -1
+
+    x = str(x).upper().strip()
+    x = x.replace("–", "-").replace("—", "-").replace(" ", "")
+
+    nums = re.findall(r"\d+\.?\d*", x)
+
+    if len(nums) >= 2:
+        return float(nums[1])
+    elif len(nums) == 1:
+        return float(nums[0])
+
+    return -1
 
 # ---------------- SMART SORT ---------------- #
 
 def apply_sort(df):
 
+    # Normalize column names
     df.columns = [c.strip().lower() for c in df.columns]
 
     # ---------------- SHAPE ---------------- #
     if "shape" in df.columns:
         df["shape_clean"] = df["shape"].apply(clean_text)
-
         df["shape_rank"] = df["shape_clean"].apply(
             lambda x: SHAPE_ORDER.index(x) if x in SHAPE_ORDER else 9999
         )
-
     else:
         df["shape_rank"] = 9999
 
     # ---------------- SIZE ---------------- #
     if "size range" in df.columns:
-        df["size_clean"] = df["size range"].apply(normalize_size)
-
-        df["size_rank"] = df["size_clean"].apply(
-            lambda x: SIZE_ORDER.index(x) if x in SIZE_ORDER else 9999
-        )
-
+        df["size_key"] = df["size range"].apply(size_max_value)
     else:
-        df["size_rank"] = 9999
+        df["size_key"] = -1
 
-    # ---------------- CLARITY (optional safe) ---------------- #
-    if "clarity" in df.columns:
-        df["clarity"] = df["clarity"].apply(clean_text)
-
-    # ---------------- COLOR ---------------- #
+    # ---------------- COLOR (FIXED) ---------------- #
     if "color" in df.columns:
-        df["color"] = df["color"].apply(clean_text)
+        df["color_clean"] = df["color"].apply(normalize_color)
+        df["color_rank"] = df["color_clean"].apply(
+            lambda x: COLOR_ORDER.index(x) if x in COLOR_ORDER else 9999
+        )
+    else:
+        df["color_rank"] = 9999
+
+    # ---------------- CLARITY (FIXED) ---------------- #
+    if "clarity" in df.columns:
+        df["clarity_clean"] = df["clarity"].apply(normalize_clarity)
+        df["clarity_rank"] = df["clarity_clean"].apply(
+            lambda x: CLARITY_ORDER.index(x) if x in CLARITY_ORDER else 9999
+        )
+    else:
+        df["clarity_rank"] = 9999
 
     # ---------------- FINAL SORT ---------------- #
-    sort_cols = ["shape_rank", "size_rank"]
+    df = df.sort_values(
+        by=["shape_rank", "size_key", "color_rank", "clarity_rank"],
+        ascending=[True, False, True, True]
+    )
 
-    df = df.sort_values(sort_cols)
+    # ---------------- ROUND NUMERIC ---------------- #
+    for col in df.columns:
+        col_lower = col.lower()
 
-    # CLEAN TEMP COLUMNS
-    df.drop(columns=[c for c in df.columns if "rank" in c or "_clean" in c], inplace=True, errors="ignore")
+        if "avg" in col_lower or "average" in col_lower:
+            df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+
+        if "amount" in col_lower or "amt" in col_lower:
+            df[col] = pd.to_numeric(df[col], errors="coerce").round(2)
+
+    # ---------------- FILL MISSING ---------------- #
+    df = df.fillna("0")
+
+    # ---------------- DROP TEMP ---------------- #
+    df.drop(
+        columns=[c for c in df.columns if any(k in c for k in ["rank", "clean", "key"])],
+        inplace=True,
+        errors="ignore"
+    )
 
     return df
-
 
 # ---------------- HTML ---------------- #
 
@@ -104,10 +146,10 @@ HTML = """
     <button type="submit">Sort Files</button>
 </form>
 
-<p>Upload multiple Excel/CSV → Download sorted files ZIP</p>
+<p>Upload Excel/CSV → Download sorted ZIP</p>
 """
 
-# ---------------- PROCESS MULTI FILE ---------------- #
+# ---------------- ROUTE ---------------- #
 
 @app.route("/", methods=["GET", "POST"])
 def home():
@@ -115,15 +157,13 @@ def home():
     if request.method == "POST":
 
         files = request.files.getlist("files")
-
         memory = BytesIO()
-        import zipfile
 
         with zipfile.ZipFile(memory, "w") as z:
 
             for f in files:
 
-                if f.filename.endswith(".csv"):
+                if f.filename.lower().endswith(".csv"):
                     df = pd.read_csv(f)
                 else:
                     df = pd.read_excel(f)
@@ -145,7 +185,6 @@ def home():
         )
 
     return render_template_string(HTML)
-
 
 # ---------------- RUN ---------------- #
 
