@@ -16,6 +16,7 @@ def home():
     return render_template("index.html")
 
 
+# -------------------- HEADER DETECTION --------------------
 def detect_header(df):
     keywords = ["shape","color","clarity","location","country","origin"]
     for i, row in df.iterrows():
@@ -46,15 +47,47 @@ def find(df, names):
     return None
 
 
+# -------------------- SIZE NORMALIZATION --------------------
+def normalize_size(val):
+    if pd.isna(val):
+        return val
+    val = str(val).strip()
+
+    # remove spaces around hyphen
+    val = val.replace(" - ", "-")
+    val = val.replace("- ", "-")
+    val = val.replace(" -", "-")
+
+    # ensure single clean format
+    parts = val.split("-")
+    if len(parts) == 2:
+        try:
+            a = str(float(parts[0].strip()))
+            b = str(float(parts[1].strip()))
+            return f"{a}-{b}"
+        except:
+            return val
+    return val
+
+
+# -------------------- GROUPING --------------------
 def group_df(df):
     df.columns = [c.lower().strip() for c in df.columns]
 
     gcols = []
+    size_col = None
+
     for key in ["shape","size","color","clarity","lab","type"]:
         for c in df.columns:
             if key in c:
                 gcols.append(c)
+                if key == "size":
+                    size_col = c
                 break
+
+    # normalize size column
+    if size_col:
+        df[size_col] = df[size_col].apply(normalize_size)
 
     count = find(df, ["pcs","qty","count"])
     carat = find(df, ["carat","cts","weight"])
@@ -75,9 +108,19 @@ def group_df(df):
     if carat: rename[carat] = "carat"
     if amount: rename[amount] = "amount"
 
-    return df.rename(columns=rename)
+    df = df.rename(columns=rename)
+
+    # -------------------- AVG COLUMN --------------------
+    if "carat" in df.columns and "amount" in df.columns:
+        df["avg"] = df.apply(
+            lambda x: (x["amount"] / x["carat"]) if x["carat"] else 0,
+            axis=1
+        )
+
+    return df
 
 
+# -------------------- DATA BUILD --------------------
 def build_data():
     categories = list(set(f["type"] for f in files_data))
     kinds = ["DZ","FANCY"]
@@ -115,6 +158,7 @@ def build_data():
     return result, categories
 
 
+# -------------------- PREVIEW --------------------
 @app.route("/process-preview")
 def preview():
 
@@ -144,7 +188,8 @@ def preview():
                 g = g.rename(columns={
                     "count": f"{c.lower()} count",
                     "carat": f"{c.lower()} carat",
-                    "amount": f"{c.lower()} amount"
+                    "amount": f"{c.lower()} amount",
+                    "avg": f"{c.lower()} avg"
                 })
 
                 merged = g if merged is None else pd.merge(merged, g, how="outer")
@@ -159,6 +204,7 @@ def preview():
     return jsonify({"data": output})
 
 
+# -------------------- DOWNLOAD --------------------
 @app.route("/download")
 def download():
 
@@ -190,7 +236,8 @@ def download():
                     g = g.rename(columns={
                         "count": f"{c.lower()} count",
                         "carat": f"{c.lower()} carat",
-                        "amount": f"{c.lower()} amount"
+                        "amount": f"{c.lower()} amount",
+                        "avg": f"{c.lower()} avg"
                     })
 
                     merged = g if merged is None else pd.merge(merged, g, how="outer")
@@ -200,8 +247,10 @@ def download():
 
                 merged.fillna(0, inplace=True)
 
-                total = {col: (merged[col].sum() if merged[col].dtype!="object" else "TOTAL")
-                         for col in merged.columns}
+                total = {
+                    col: (merged[col].sum() if merged[col].dtype != "object" else "TOTAL")
+                    for col in merged.columns
+                }
 
                 merged = pd.concat([pd.DataFrame([total]), merged], ignore_index=True)
 
@@ -231,6 +280,7 @@ def download():
     return response
 
 
+# -------------------- UPLOAD --------------------
 @app.route("/upload", methods=["POST"])
 def upload():
 
