@@ -1,0 +1,16 @@
+project/
+¦
++-- app.py
++-- engines/
+¦   +-- stock_engine.py
+¦   +-- sold_engine.py
+¦   +-- combine_engine.py
+¦   +-- sort_engine.py
+¦   +-- graph_engine.py
+¦
++-- templates/
+¦   +-- index.html
+¦   +-- stock.html
+¦   +-- sold.html
+¦   +-- combine.html
+¦   +-- graph.html
