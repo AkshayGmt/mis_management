@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Sort Engine - MIS</title>
+
+<style>
+body {
+    font-family: Arial;
+    background: #eef3f8;
+    padding: 20px;
+}
+
+.header {
+    background: white;
+    padding: 15px;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+    margin-bottom: 15px;
+}
+
+.upload-box {
+    background: white;
+    padding: 15px;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+}
+
+button {
+    margin-top: 10px;
+    padding: 8px 14px;
+    border: none;
+    background: #2c3e50;
+    color: white;
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+button:hover {
+    background: #1a252f;
+}
+
+.file-list {
+    margin-top: 20px;
+    background: white;
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid #ddd;
+}
+
+.file {
+    background: #3498db;
+    color: white;
+    padding: 6px;
+    margin: 5px 0;
+    font-size: 12px;
+    border-radius: 4px;
+    display: flex;
+    justify-content: space-between;
+}
+
+table {
+    width: 100%;
+    margin-top: 20px;
+    border-collapse: collapse;
+    background: white;
+}
+
+th, td {
+    border: 1px solid #ccc;
+    padding: 6px;
+    font-size: 12px;
+    text-align: center;
+}
+
+th {
+    background: #2c3e50;
+    color: white;
+}
+
+.nav {
+    margin-bottom: 10px;
+}
+
+.nav a {
+    text-decoration: none;
+    color: #2c3e50;
+    font-weight: bold;
+}
+</style>
+</head>
+
+<body>
+
+<div class="header">
+    <h2>?? SORT ENGINE</h2>
+    <p>Upload files ? Apply smart sorting ? Download sorted ZIP</p>
+    <div class="nav">
+        <a href="/">? Back to Dashboard</a>
+    </div>
+</div>
+
+<div class="upload-box">
+
+    <form id="sortForm">
+        <input type="file" id="files" multiple required>
+        <br>
+        <button type="submit">?? Upload & Sort</button>
+    </form>
+
+</div>
+
+<div class="file-list" id="fileList">
+    <h4>Uploaded Files Preview</h4>
+    <p>No files uploaded yet</p>
+</div>
+
+<div id="result"></div>
+
+<script>
+
+document.getElementById("sortForm").onsubmit = async function(e){
+    e.preventDefault();
+
+    let form = new FormData();
+    let files = document.getElementById("files").files;
+
+    if(files.length === 0){
+        alert("Please select files");
+        return;
+    }
+
+    for(let f of files){
+        form.append("files", f);
+    }
+
+    document.getElementById("result").innerHTML =
+        "<p>? Processing files...</p>";
+
+    try {
+        let res = await fetch("/sort-upload", {
+            method: "POST",
+            body: form
+        });
+
+        if(!res.ok) throw new Error("Upload failed");
+
+        let blob = await res.blob();
+
+        // AUTO DOWNLOAD ZIP
+        let url = window.URL.createObjectURL(blob);
+        let a = document.createElement("a");
+        a.href = url;
+        a.download = "sorted_output.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+
+        document.getElementById("result").innerHTML =
+            "<p style='color:green;'>? Sorting completed & downloaded</p>";
+
+    } catch(err){
+        document.getElementById("result").innerHTML =
+            "<p style='color:red;'>? Error: " + err.message + "</p>";
+    }
+};
+
+</script>
+
+</body>
+</html>
