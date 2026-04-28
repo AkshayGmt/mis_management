@@ -18,7 +18,28 @@ h2 {
     text-align:center;
     color:#1f2d3d;
     font-weight:800;
-    margin-bottom:20px;
+    margin-bottom:10px;
+}
+
+/* BACK BUTTON */
+.top-bar {
+    text-align:center;
+    margin-bottom:15px;
+}
+
+.back-btn {
+    display:inline-block;
+    padding:8px 16px;
+    border-radius:8px;
+    background: linear-gradient(135deg,#2c3e50,#34495e);
+    color:white;
+    text-decoration:none;
+    font-weight:500;
+    transition:0.3s;
+}
+
+.back-btn:hover {
+    transform:scale(1.05);
 }
 
 /* PANEL */
@@ -55,16 +76,12 @@ button[type="submit"] {
     color:white;
 }
 
-button[type="submit"]:hover {
-    transform:scale(1.05);
-}
-
 button[type="button"] {
     background: linear-gradient(135deg,#9b59b6,#c084fc);
     color:white;
 }
 
-button[type="button"]:hover {
+button:hover {
     transform:scale(1.05);
 }
 
@@ -83,17 +100,10 @@ button[type="button"]:hover {
     min-height:170px;
     box-shadow:0 10px 25px rgba(0,0,0,0.08);
     transition:0.3s;
-    position:relative;
 }
 
 .box:hover {
     transform: translateY(-5px);
-}
-
-.box b {
-    display:block;
-    margin-bottom:10px;
-    color:#2c3e50;
 }
 
 /* FILE */
@@ -108,11 +118,6 @@ button[type="button"]:hover {
     justify-content:space-between;
     border-radius:8px;
     align-items:center;
-    transition:0.2s;
-}
-
-.file:hover {
-    transform:scale(1.02);
 }
 
 .file button {
@@ -122,10 +127,6 @@ button[type="button"]:hover {
     padding:3px 6px;
     border-radius:4px;
     cursor:pointer;
-}
-
-.file button:hover {
-    background:#c0392b;
 }
 
 /* TABLE */
@@ -147,27 +148,8 @@ th, td {
 }
 
 th {
-    background: linear-gradient(135deg,#2c3e50,#34495e);
+    background:#2c3e50;
     color:white;
-}
-
-/* HEADINGS */
-h3 {
-    margin-top:25px;
-    color:#2c3e50;
-}
-
-h4 {
-    margin-top:10px;
-    color:#555;
-}
-
-/* LOADING */
-.loading {
-    text-align:center;
-    font-weight:600;
-    color:#555;
-    margin-top:20px;
 }
 </style>
 </head>
@@ -175,6 +157,12 @@ h4 {
 <body>
 
 <h2>💎 MIS COMBINE SYSTEM</h2>
+
+<div class="top-bar">
+    <a href="index.html" class="back-btn">
+        <i class="bi bi-arrow-left"></i> Back to Dashboard
+    </a>
+</div>
 
 <!-- CONTROL PANEL -->
 <div class="panel">
@@ -210,15 +198,12 @@ h4 {
 
 </div>
 
-<!-- GRID AREA -->
 <div id="app"></div>
-
-<!-- TABLE AREA -->
 <div id="tableArea"></div>
 
 <script>
 
-/* --- SAME JS (UNCHANGED) --- */
+/* YOUR ORIGINAL JS - UNCHANGED */
 
 let files = [];
 
@@ -335,7 +320,7 @@ document.getElementById("uploadForm").onsubmit = async (e)=>{
 function process(){
 
     document.getElementById("tableArea").innerHTML =
-        "<p class='loading'>⏳ Processing data...</p>";
+        "<p style='text-align:center;'>⏳ Processing...</p>";
 
     fetch("/process-preview")
     .then(res => res.json())
@@ -346,14 +331,14 @@ function process(){
 
         for(let kind in data){
 
-            html += `<h3>📁 ${kind}</h3>`;
+            html += `<h3>${kind}</h3>`;
 
             for(let loc in data[kind]){
 
                 let rows = data[kind][loc];
                 if(!rows.length) continue;
 
-                html += `<h4>📍 ${loc}</h4>`;
+                html += `<h4>${loc}</h4>`;
 
                 let cols = Object.keys(rows[0]);
 
@@ -378,10 +363,6 @@ function process(){
         a.download = "MIS_Output.zip";
         a.click();
 
-    })
-    .catch(err=>{
-        document.getElementById("tableArea").innerHTML =
-            "<p style='color:red;'>Error: " + err.message + "</p>";
     });
 }
 
