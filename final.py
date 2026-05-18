@@ -2,37 +2,110 @@ from flask import Flask, render_template, request, jsonify, send_file
 import pandas as pd
 import zipfile
 import os
-from io import BytesIO
 import re
+import uuid
+from io import BytesIO
+from threading import Lock
 
 app = Flask(__name__)
 
 # =========================================================
 # GLOBAL STORAGE
 # =========================================================
+
 files_data = []
+lock = Lock()
+
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def clean_columns(df):
+
+    df.columns = [
+        re.sub(r"\s+", " ", str(c).strip().lower())
+        for c in df.columns
+    ]
+
+    # remove duplicate columns
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    return df
 
 
 # =========================================================
-# SIZE NORMALIZATION (🔥 FIXED)
+# TEXT NORMALIZATION
 # =========================================================
-def normalize_size(value):
+
+def normalize_text(value):
+
     if pd.isna(value):
-        return value
+        return None
 
-    v = str(value).lower().strip()
+    v = str(value).strip()
+
+    # remove extra spaces
+    v = re.sub(r"\s+", " ", v)
+
+    # uppercase
+    return v.upper()
+
+
+# =========================================================
+# SIZE NORMALIZATION
+# =========================================================
+
+def normalize_size(value):
+
+    if pd.isna(value):
+        return None
+
+    v = str(value).strip().lower()
 
     # remove spaces
     v = re.sub(r"\s+", "", v)
 
-    # unify dash types
-    v = v.replace("–", "-").replace("—", "-")
+    # normalize separators
+    v = (
+        v.replace("–", "-")
+         .replace("—", "-")
+         .replace("_", "-")
+         .replace("to", "-")
+    )
 
-    # ensure proper range format
-    match = re.match(r"(\d+\.?\d*)-(\d+\.?\d*)", v)
+    # keep valid chars only
+    v = re.sub(r"[^0-9.\-+]", "", v)
+
+    if not v:
+        return None
+
+    # range
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)",
+        v
+    )
+
     if match:
+
         a, b = match.groups()
+
+        # sort numerically
+        if float(a) > float(b):
+            a, b = b, a
+
         return f"{a}-{b}"
+
+    # plus
+    match = re.fullmatch(
+        r"(\d+(?:\.\d+)?)\+?",
+        v
+    )
+
+    if match:
+        return f"{match.group(1)}+"
 
     return v
 
@@ -40,140 +113,317 @@ def normalize_size(value):
 # =========================================================
 # HEADER DETECTION
 # =========================================================
+
 def detect_header(df):
-    keywords = ["shape", "color", "clarity", "location", "country", "origin"]
+
+    keywords = [
+        "shape",
+        "color",
+        "clarity",
+        "size",
+        "country",
+        "origin",
+        "location"
+    ]
 
     for i, row in df.iterrows():
-        vals = [str(x).lower() for x in row.values]
-        if sum(any(k in v for v in vals) for k in keywords) >= 2:
+
+        vals = [
+            str(x).strip().lower()
+            for x in row.values
+        ]
+
+        matches = sum(
+            any(k == v for k in keywords)
+            for v in vals
+        )
+
+        if matches >= 2:
             return i
+
     return None
 
 
 # =========================================================
-# PROCESS FILE
+# COLUMN FINDER
 # =========================================================
+
+def find(df, names):
+
+    for n in names:
+        for c in df.columns:
+            if n in c.lower():
+                return c
+
+    return None
+
+
+# =========================================================
+# FILE PROCESSING
+# =========================================================
+
 def process_file(path):
+
     try:
-        df = pd.read_excel(path, header=None)
-        h = detect_header(df)
-        if h is None:
+
+        raw = pd.read_excel(
+            path,
+            header=None,
+            engine="openpyxl"
+        )
+
+        header_row = detect_header(raw)
+
+        if header_row is None:
+            print("HEADER NOT FOUND:", path)
             return None
-        df = pd.read_excel(path, header=h)
+
+        df = pd.read_excel(
+            path,
+            header=header_row,
+            engine="openpyxl"
+        )
+
+        df = clean_columns(df)
+
+        # normalize columns
+        for c in df.columns:
+
+            cl = c.lower()
+
+            # size normalization
+            if "size" in cl:
+                df[c] = df[c].apply(normalize_size)
+
+            # text normalization
+            elif any(x in cl for x in [
+                "color",
+                "clarity",
+                "shape",
+                "lab",
+                "type"
+            ]):
+                df[c] = df[c].apply(normalize_text)
+
+        print("PROCESSED:", path)
+        print("COLUMNS:", df.columns.tolist())
+
         return df
-    except:
+
+    except Exception as e:
+
+        print("PROCESS FILE ERROR:", path)
+        print(e)
+
         return None
 
 
 # =========================================================
 # BUILD DATA
 # =========================================================
+
 def build_data():
 
-    categories = list(set(f["type"] for f in files_data))
+    categories = list(
+        set(f["type"] for f in files_data)
+    )
+
     kinds = ["DZ", "FANCY"]
 
     result = {
-        c: {k: {"USA": [], "INDIA": []} for k in kinds}
+        c: {
+            k: {
+                "USA": [],
+                "INDIA": []
+            }
+            for k in kinds
+        }
         for c in categories
     }
 
     for f in files_data:
 
         df = process_file(f["path"])
-        if df is None:
+
+        if df is None or df.empty:
             continue
 
-        cat = f["type"]
+        category = f["type"]
         kind = f["kind"]
 
-        cols = [c.lower().strip() for c in df.columns]
+        loc_col = find(df, [
+            "location",
+            "country",
+            "origin"
+        ])
 
-        loc_col = None
-        for x in ["location", "country", "origin"]:
-            if x in cols:
-                loc_col = df.columns[cols.index(x)]
-                break
-
-        # apply size normalization
-        for c in df.columns:
-            if "size" in c.lower():
-                df[c] = df[c].apply(normalize_size)
-
+        # no location column
         if loc_col is None:
-            result[cat][kind]["INDIA"].append(df)
+            result[category][kind]["INDIA"].append(df)
             continue
 
-        df[loc_col] = df[loc_col].astype(str).str.lower()
+        df[loc_col] = (
+            df[loc_col]
+            .astype(str)
+            .str.lower()
+        )
 
-        usa = df[df[loc_col].str.contains("usa|us|america", na=False)]
-        india = df[~df[loc_col].str.contains("usa|us|america", na=False)]
+        usa = df[
+            df[loc_col]
+            .str.contains(
+                "usa|us|america",
+                na=False
+            )
+        ]
+
+        india = df[
+            ~df[loc_col]
+            .str.contains(
+                "usa|us|america",
+                na=False
+            )
+        ]
 
         if not usa.empty:
-            result[cat][kind]["USA"].append(usa)
+            result[category][kind]["USA"].append(usa)
+
         if not india.empty:
-            result[cat][kind]["INDIA"].append(india)
+            result[category][kind]["INDIA"].append(india)
 
     return result, categories
 
 
 # =========================================================
-# COLUMN FINDER
+# GROUPING
 # =========================================================
-def find(df, names):
-    for n in names:
-        for c in df.columns:
-            if n in c:
-                return c
-    return None
 
-
-# =========================================================
-# GROUP FUNCTION (🔥 UPDATED WITH AVG)
-# =========================================================
 def group_df(df):
 
-    df.columns = [c.lower().strip() for c in df.columns]
+    try:
 
-    gcols = []
+        if df.empty:
+            return pd.DataFrame()
 
-    for key in ["shape", "size", "color", "clarity", "lab", "type"]:
-        for c in df.columns:
-            if key in c:
-                gcols.append(c)
-                break
+        df = clean_columns(df)
 
-    count = find(df, ["pcs", "qty", "count"])
-    carat = find(df, ["carat", "cts", "weight"])
-    amount = find(df, ["amount", "value", "price"])
+        print("GROUPING COLUMNS:")
+        print(df.columns.tolist())
 
-    agg = {}
-    if count: agg[count] = "sum"
-    if carat: agg[carat] = "sum"
-    if amount: agg[amount] = "sum"
+        group_cols = []
 
-    if not gcols or not agg:
+        keys = [
+            "shape",
+            "size",
+            "color",
+            "clarity",
+            "lab",
+            "type"
+        ]
+
+        for key in keys:
+            for c in df.columns:
+                if key in c:
+                    group_cols.append(c)
+                    break
+
+        count_col = find(df, [
+            "pcs",
+            "qty",
+            "count"
+        ])
+
+        carat_col = find(df, [
+            "carat",
+            "cts",
+            "weight"
+        ])
+
+        amount_col = find(df, [
+            "amount",
+            "value",
+            "price"
+        ])
+
+        agg = {}
+
+        if count_col:
+            agg[count_col] = "sum"
+
+        if carat_col:
+            agg[carat_col] = "sum"
+
+        if amount_col:
+            agg[amount_col] = "sum"
+
+        if not group_cols:
+            print("NO GROUP COLUMNS")
+            return pd.DataFrame()
+
+        if not agg:
+            print("NO AGGREGATION COLUMNS")
+            return pd.DataFrame()
+
+        grouped = (
+            df.groupby(group_cols, dropna=False)
+            .agg(agg)
+            .reset_index()
+        )
+
+        rename = {}
+
+        if count_col:
+            rename[count_col] = "count"
+
+        if carat_col:
+            rename[carat_col] = "carat"
+
+        if amount_col:
+            rename[amount_col] = "amount"
+
+        grouped.rename(
+            columns=rename,
+            inplace=True
+        )
+
+        # average
+        if (
+            "amount" in grouped.columns
+            and "carat" in grouped.columns
+        ):
+
+            grouped["avg"] = (
+                grouped["amount"] /
+                grouped["carat"].replace(
+                    0,
+                    pd.NA
+                )
+            )
+
+        # round financial columns
+        if "amount" in grouped.columns:
+            grouped["amount"] = (
+                grouped["amount"].round(2)
+            )
+
+        if "avg" in grouped.columns:
+            grouped["avg"] = (
+                grouped["avg"].round(2)
+            )
+
+        return grouped
+
+    except Exception as e:
+
+        print("GROUP ERROR:")
+        print(e)
+
         return pd.DataFrame()
-
-    df = df.groupby(gcols, dropna=False).agg(agg).reset_index()
-
-    rename = {}
-    if count: rename[count] = "count"
-    if carat: rename[carat] = "carat"
-    if amount: rename[amount] = "amount"
-
-    df = df.rename(columns=rename)
-
-    # 🔥 AVG COLUMN
-    if "amount" in df.columns and "carat" in df.columns:
-        df["avg"] = df["amount"] / df["carat"].replace(0, pd.NA)
-
-    return df
 
 
 # =========================================================
 # COMBINE ENGINE
 # =========================================================
+
 def run_combine():
 
     kinds = ["DZ", "FANCY"]
@@ -181,93 +431,191 @@ def run_combine():
 
     data, categories = build_data()
 
-    # 🔥 ORDER FIX
-    order = ["TOTAL", "SOLD", "CURRENT"]
-    categories = sorted(set(categories), key=lambda x: order.index(x) if x in order else 999)
+    order = [
+        "TOTAL",
+        "SOLD",
+        "CURRENT"
+    ]
 
-    mem = BytesIO()
+    categories = sorted(
+        set(categories),
+        key=lambda x:
+        order.index(x)
+        if x in order else 999
+    )
 
-    with zipfile.ZipFile(mem, "w") as z:
+    memory_zip = BytesIO()
 
-        for k in kinds:
-            for l in locations:
+    with zipfile.ZipFile(memory_zip, "w") as z:
+
+        for kind in kinds:
+
+            for location in locations:
 
                 merged = None
 
-                for c in categories:
+                for category in categories:
 
-                    dfs = data[c][k][l]
+                    dfs = data[category][kind][location]
+
                     if not dfs:
                         continue
 
-                    df = pd.concat(dfs, ignore_index=True)
-                    g = group_df(df)
+                    combined = pd.concat(
+                        dfs,
+                        ignore_index=True
+                    )
 
-                    if g.empty:
+                    grouped = group_df(combined)
+
+                    if grouped.empty:
                         continue
 
-                    g = g.rename(columns={
-                        "count": f"{c.lower()} count",
-                        "carat": f"{c.lower()} carat",
-                        "amount": f"{c.lower()} amount",
-                        "avg": f"{c.lower()} avg"
+                    grouped = grouped.rename(columns={
+                        "count":
+                        f"{category.lower()} count",
+
+                        "carat":
+                        f"{category.lower()} carat",
+
+                        "amount":
+                        f"{category.lower()} amount",
+
+                        "avg":
+                        f"{category.lower()} avg"
                     })
 
-                    merged = g if merged is None else pd.merge(merged, g, how="outer")
+                    if merged is None:
 
-                if merged is None:
+                        merged = grouped
+
+                    else:
+
+                        merge_keys = [
+                            c for c in merged.columns
+                            if c in grouped.columns
+                            and not any(
+                                x in c
+                                for x in [
+                                    "count",
+                                    "carat",
+                                    "amount",
+                                    "avg"
+                                ]
+                            )
+                        ]
+
+                        merged = pd.merge(
+                            merged,
+                            grouped,
+                            how="outer",
+                            on=merge_keys
+                        )
+
+                if merged is None or merged.empty:
                     continue
 
                 merged.fillna(0, inplace=True)
 
-                total = {
-                    c: merged[c].sum() if merged[c].dtype != "object" else "TOTAL"
-                    for c in merged.columns
-                }
+                # TOTAL ROW
+                total = {}
 
-                merged = pd.concat([pd.DataFrame([total]), merged], ignore_index=True)
-
-                # optional sort if size exists
                 for c in merged.columns:
+
+                    if pd.api.types.is_numeric_dtype(
+                        merged[c]
+                    ):
+                        total[c] = merged[c].sum()
+                    else:
+                        total[c] = "TOTAL"
+
+                merged = pd.concat([
+                    pd.DataFrame([total]),
+                    merged
+                ], ignore_index=True)
+
+                # SORT SIZE
+                for c in merged.columns:
+
                     if "size" in c:
-                        merged = merged.sort_values(by=c)
 
-                buf = BytesIO()
-                merged.to_excel(buf, index=False)
+                        try:
+                            merged = merged.sort_values(
+                                by=c
+                            )
 
-                z.writestr(f"{k}_{l}.xlsx", buf.getvalue())
+                        except Exception as e:
+                            print("SORT ERROR:", e)
 
-    mem.seek(0)
-    return mem
+                # EXPORT
+                excel_buffer = BytesIO()
+
+                merged.to_excel(
+                    excel_buffer,
+                    index=False,
+                    engine="openpyxl"
+                )
+
+                z.writestr(
+                    f"{kind}_{location}.xlsx",
+                    excel_buffer.getvalue()
+                )
+
+    memory_zip.seek(0)
+
+    return memory_zip
 
 
 # =========================================================
 # ROUTES
 # =========================================================
+
 @app.route("/")
 def home():
-    return render_template("index.html")
+    return render_template("in.html")
 
 
 @app.route("/upload", methods=["POST"])
 def upload():
 
-    os.makedirs("uploads", exist_ok=True)
+    file_type = request.form.get("type")
 
-    ftype = request.form.get("type")
+    uploaded = []
 
     for f in request.files.getlist("files"):
-        path = os.path.join("uploads", f.filename)
+
+        unique_name = (
+            f"{uuid.uuid4()}_{f.filename}"
+        )
+
+        path = os.path.join(
+            UPLOAD_FOLDER,
+            unique_name
+        )
+
         f.save(path)
 
-        files_data.append({
+        data = {
             "name": f.filename,
-            "type": ftype,
-            "kind": "DZ" if "dz" in f.filename.lower() else "FANCY",
+            "saved_name": unique_name,
+            "type": file_type,
+            "kind": (
+                "DZ"
+                if "dz" in f.filename.lower()
+                else "FANCY"
+            ),
             "path": path
-        })
+        }
 
-    return "OK"
+        with lock:
+            files_data.append(data)
+
+        uploaded.append(data)
+
+    return jsonify({
+        "status": "success",
+        "uploaded": uploaded
+    })
 
 
 @app.route("/files")
@@ -277,22 +625,54 @@ def get_files():
 
 @app.route("/delete", methods=["POST"])
 def delete():
+
     global files_data
+
     name = request.json["name"]
-    files_data = [f for f in files_data if f["name"] != name]
-    return "OK"
+
+    with lock:
+
+        new_files = []
+
+        for f in files_data:
+
+            if f["name"] == name:
+
+                try:
+
+                    if os.path.exists(f["path"]):
+                        os.remove(f["path"])
+
+                except Exception as e:
+                    print("DELETE ERROR:", e)
+
+            else:
+                new_files.append(f)
+
+        files_data = new_files
+
+    return jsonify({
+        "status": "deleted"
+    })
 
 
 @app.route("/move", methods=["POST"])
 def move():
+
     data = request.json
 
-    for f in files_data:
-        if f["name"] == data["name"]:
-            f["type"] = data["type"]
-            f["kind"] = data["kind"]
+    with lock:
 
-    return "OK"
+        for f in files_data:
+
+            if f["name"] == data["name"]:
+
+                f["type"] = data["type"]
+                f["kind"] = data["kind"]
+
+    return jsonify({
+        "status": "updated"
+    })
 
 
 @app.route("/process-preview")
@@ -300,26 +680,55 @@ def preview():
 
     data, categories = build_data()
 
-    preview = {
-        k: {"USA": [], "INDIA": []}
+    preview_data = {
+        k: {
+            "USA": [],
+            "INDIA": []
+        }
         for k in ["DZ", "FANCY"]
     }
 
-    for k in preview:
-        for l in preview[k]:
-            for c in categories:
-                dfs = data[c][k][l]
-                for df in dfs:
-                    preview[k][l].append(df.head(5).to_dict(orient="records"))
+    for kind in preview_data:
 
-    return jsonify({"data": preview})
+        for location in preview_data[kind]:
+
+            for category in categories:
+
+                dfs = data[category][kind][location]
+
+                for df in dfs:
+
+                    preview_data[kind][location].append(
+                        df.head(5).to_dict(
+                            orient="records"
+                        )
+                    )
+
+    return jsonify({
+        "data": preview_data
+    })
 
 
 @app.route("/download")
 def download():
-    zip_file = run_combine()
-    return send_file(zip_file, download_name="MIS_Output.zip", as_attachment=True)
 
+    zip_file = run_combine()
+
+    return send_file(
+        zip_file,
+        download_name="MIS_Output.zip",
+        as_attachment=True
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
 
 if __name__ == "__main__":
-    app.run(debug=True)
+
+    app.run(
+        debug=True,
+        host="0.0.0.0",
+        port=5000
+    )
